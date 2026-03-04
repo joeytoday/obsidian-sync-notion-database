@@ -1,7 +1,7 @@
 {
 	"id": "notion-database-sync",
 	"name": "Notion Database Sync",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"minAppVersion": "0.15.0",
 	"description": "Sync Notion Database records to Obsidian notes with customizable mapping and templates.",
 	"author": "joeytoday",

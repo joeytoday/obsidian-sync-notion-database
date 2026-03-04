@@ -47,6 +47,14 @@ class NotionClient {
 				body: startCursor ? { start_cursor: startCursor } : undefined,
 			}),
 	};
+
+	pages = {
+		retrieve: (pageId: string) =>
+			this.request<{
+				id: string;
+				properties: Record<string, any>;
+			}>(`/pages/${pageId}`),
+	};
 }
 
 // ==================== 接口定义 ====================
@@ -94,6 +102,18 @@ interface PageInfo {
 	lastEditedTime: string;
 	properties: Record<string, any>;
 	title: string;
+}
+
+type SyncPreviewStatus = 'new' | 'updated' | 'unchanged' | 'skipped';
+
+interface SyncPreviewItem {
+	page: PageInfo;
+	filename: string;
+	filePath: string;
+	status: SyncPreviewStatus;
+	newContent: string;
+	oldContent: string;
+	selected: boolean;
 }
 
 // ==================== 默认设置 ====================
@@ -170,33 +190,48 @@ export default class NotionSyncPlugin extends Plugin {
 
 		const pages: PageInfo[] = [];
 		let cursor: string | undefined;
+		let pageCount = 0;
 
 		do {
-			const response = await this.notionClient.databases.query(
-				this.settings.databaseId,
-				cursor
-			);
+			try {
+				const response = await this.notionClient.databases.query(
+					this.settings.databaseId,
+					cursor
+				);
+				
+				pageCount++;
+				console.log(`[Notion Sync] 获取第 ${pageCount} 批数据，本批 ${response.results.length} 条`);
 
-			for (const page of response.results) {
-				const title = this.extractTitle(page.properties);
-				pages.push({
-					id: page.id,
-					lastEditedTime: page.last_edited_time,
-					properties: page.properties,
-					title,
-				});
+				for (const page of response.results) {
+					try {
+						const title = this.extractTitle(page.properties);
+						pages.push({
+							id: page.id,
+							lastEditedTime: page.last_edited_time,
+							properties: page.properties,
+							title,
+						});
+					} catch (error) {
+						console.error(`[Notion Sync] 处理页面 ${page.id} 失败:`, error);
+					}
+				}
+
+				cursor = response.next_cursor ?? undefined;
+			} catch (error) {
+				console.error('[Notion Sync] 获取页面失败:', error);
+				new Notice(`获取数据失败: ${error.message}`);
+				break;
 			}
-
-			cursor = response.next_cursor ?? undefined;
 		} while (cursor);
-
+		
+		console.log(`[Notion Sync] 总共获取 ${pages.length} 条记录`);
 		return pages;
 	}
 
 	// 提取页面标题
 	extractTitle(properties: Record<string, any>): string {
 		// 优先从 title 属性获取
-		for (const [key, prop] of Object.entries(properties)) {
+		for (const [, prop] of Object.entries(properties)) {
 			if (prop?.type === 'title' && prop.title?.length > 0) {
 				return prop.title.map((t: any) => t.plain_text).join('');
 			}
@@ -231,6 +266,8 @@ export default class NotionSyncPlugin extends Plugin {
 
 	// 提取属性值
 	extractPropertyValue(prop: any): any {
+		if (!prop || !prop.type) return '';
+		
 		switch (prop.type) {
 			case 'title':
 				return prop.title?.map((t: any) => t.plain_text).join('') || '';
@@ -254,12 +291,42 @@ export default class NotionSyncPlugin extends Plugin {
 				return prop.date?.start || '';
 			case 'status':
 				return prop.status?.name || '';
-			case 'formula':
-				return prop.formula?.[prop.formula.type] || '';
+			case 'formula': {
+				if (!prop.formula) return '';
+				const formulaType = prop.formula.type;
+				if (formulaType === 'string') return prop.formula.string || '';
+				if (formulaType === 'number') return prop.formula.number ?? '';
+				if (formulaType === 'boolean') return prop.formula.boolean ?? '';
+				if (formulaType === 'date') return prop.formula.date?.start || '';
+				return '';
+			}
 			case 'rollup':
-				return prop.rollup?.array || [];
+				// rollup 可能是数组或单个值，转换为字符串
+				if (!prop.rollup) return '';
+				if (prop.rollup.type === 'array' && prop.rollup.array) {
+					// 提取数组中的值
+					const values = prop.rollup.array.map((item: any) => {
+						if (item.title) return item.title.map((t: any) => t.plain_text).join('');
+						if (item.rich_text) return item.rich_text.map((t: any) => t.plain_text).join('');
+						if (item.number !== undefined) return String(item.number);
+						if (item.select?.name) return item.select.name;
+						return '';
+					}).filter((v: string) => v);
+					return values.join(', ');
+				}
+				if (prop.rollup.type === 'number') return prop.rollup.number ?? '';
+				if (prop.rollup.type === 'date') return prop.rollup.date?.start || '';
+				return '';
+			case 'files':
+				if (!prop.files || prop.files.length === 0) return '';
+				return prop.files.map((f: any) => {
+					if (f.type === 'external') return f.external?.url || '';
+					if (f.type === 'file') return f.file?.url || '';
+					return '';
+				}).filter((url: string) => url).join(', ');
 			case 'relation':
-				return prop.relation?.map((r: any) => r.id) || [];
+				if (!prop.relation || prop.relation.length === 0) return '';
+				return prop.relation.map((r: any) => r.id || '').join(', ');
 			case 'created_time':
 				return prop.created_time;
 			case 'last_edited_time':
@@ -291,35 +358,92 @@ export default class NotionSyncPlugin extends Plugin {
 		return filename.replace(/[<>:"/\\|?*]/g, '_').trim() || 'Untitled';
 	}
 
-	// 生成 frontmatter
-	generateFrontmatter(properties: Record<string, any>): string {
-		const lines: string[] = [];
+	// 获取 relation 属性中关联页面的标题
+	async fetchRelationTitles(relationIds: string[]): Promise<string[]> {
+		if (!this.notionClient || relationIds.length === 0) return [];
+
+		const titles: string[] = [];
+		for (const pageId of relationIds) {
+			try {
+				const page = await this.notionClient.pages.retrieve(pageId);
+				const title = this.extractTitle(page.properties);
+				titles.push(title);
+			} catch (error) {
+				console.warn(`[Notion Sync] 获取关联页面 ${pageId} 标题失败:`, error);
+				titles.push(pageId.slice(0, 8));
+			}
+		}
+		return titles;
+	}
+
+	// 提取属性值（异步版本，支持 relation 标题解析）
+	async extractPropertyValueAsync(prop: any): Promise<any> {
+		if (!prop || !prop.type) return '';
+
+		if (prop.type === 'relation') {
+			if (!prop.relation || prop.relation.length === 0) return '';
+			const relationIds = prop.relation.map((r: any) => r.id).filter((id: string) => id);
+			const titles = await this.fetchRelationTitles(relationIds);
+			return titles.length === 1 ? titles[0] : titles;
+		}
+
+		return this.extractPropertyValue(prop);
+	}
+
+	// 将属性值格式化为 YAML frontmatter 格式的字符串
+	formatValueForYaml(value: any): string {
+		if (value === null || value === undefined || value === '') {
+			return '';
+		}
+
+		if (Array.isArray(value)) {
+			if (value.length === 0) return '';
+			// 多值使用 YAML 列表格式
+			return '\n' + value.map(v => `  - ${v}`).join('\n');
+		}
+
+		if (typeof value === 'boolean') {
+			return String(value);
+		}
+
+		const stringValue = String(value);
+
+		// 包含特殊 YAML 字符时用引号包裹
+		if (/[:#[\]{}|>&*!,]/g.test(stringValue) || stringValue.includes('\n')) {
+			return `"${stringValue.replace(/"/g, '\\"')}"`;
+		}
+
+		return stringValue;
+	}
+
+	// 构建 Notion 属性数据的 Map（obsidianProperty -> 格式化后的值）
+	async buildNotionPropertyMap(properties: Record<string, any>): Promise<Map<string, string>> {
+		const propertyMap = new Map<string, string>();
 		const enabledMappings = this.settings.propertyMappings.filter(m => m.enabled);
 
 		for (const mapping of enabledMappings) {
 			const prop = properties[mapping.notionProperty];
 			if (!prop) continue;
 
-			const value = this.extractPropertyValue(prop);
-			let formattedValue: string;
-
-			if (Array.isArray(value)) {
-				if (value.length === 0) continue;
-				formattedValue = `[${value.map(v => `"${v}"`).join(', ')}]`;
-			} else if (typeof value === 'boolean') {
-				formattedValue = String(value);
-			} else if (value === null || value === undefined || value === '') {
-				continue;
-			} else {
-				formattedValue = String(value);
+			try {
+				const value = await this.extractPropertyValueAsync(prop);
+				const formattedValue = this.formatValueForYaml(value);
+				propertyMap.set(mapping.obsidianProperty, formattedValue);
+			} catch (error) {
+				console.error(`[Notion Sync] 提取属性 ${mapping.notionProperty} 失败:`, error);
 			}
+		}
 
-			// 如果有特殊字符，用引号包裹
-			if (/[:#\[\]{}|>&*!]/g.test(formattedValue) || formattedValue.includes('\n')) {
-				formattedValue = `"${formattedValue.replace(/"/g, '\\"')}"`;
-			}
+		return propertyMap;
+	}
 
-			lines.push(`${mapping.obsidianProperty}: ${formattedValue}`);
+	// 生成 frontmatter（用于默认模板中的 {{frontmatter}} 占位符）
+	async generateFrontmatter(properties: Record<string, any>): Promise<string> {
+		const propertyMap = await this.buildNotionPropertyMap(properties);
+		const lines: string[] = [];
+
+		for (const [key, value] of propertyMap) {
+			lines.push(`${key}: ${value}`);
 		}
 
 		// 添加元信息
@@ -329,9 +453,31 @@ export default class NotionSyncPlugin extends Plugin {
 		return lines.join('\n');
 	}
 
+	// 解析 frontmatter 字符串为有序的键值对列表（保留原始顺序和格式）
+	parseFrontmatterLines(frontmatterBlock: string): { key: string; originalLine: string }[] {
+		const lines = frontmatterBlock.split('\n');
+		const result: { key: string; originalLine: string }[] = [];
+
+		for (let i = 0; i < lines.length; i++) {
+			const line = lines[i];
+			// 匹配 YAML 键值对（key: value 或 key:）
+			const keyMatch = line.match(/^(\s*)([\w\-\u4e00-\u9fff]+)\s*:/);
+			if (keyMatch) {
+				// 收集多行值（如 YAML 列表）
+				let fullLine = line;
+				while (i + 1 < lines.length && /^\s+-\s/.test(lines[i + 1])) {
+					i++;
+					fullLine += '\n' + lines[i];
+				}
+				result.push({ key: keyMatch[2], originalLine: fullLine });
+			}
+		}
+
+		return result;
+	}
+
 	// 获取模板内容
 	async getTemplateContent(): Promise<string> {
-		// 如果设置了模板文件路径，优先使用文件内容
 		if (this.settings.templateFilePath) {
 			const file = this.app.vault.getAbstractFileByPath(this.settings.templateFilePath);
 			if (file instanceof TFile) {
@@ -343,34 +489,96 @@ export default class NotionSyncPlugin extends Plugin {
 				}
 			}
 		}
-		// 使用默认模板
 		return this.settings.fileTemplate;
 	}
 
 	// 生成文件内容
 	async generateFileContent(page: PageInfo): Promise<string> {
-		const frontmatter = this.generateFrontmatter(page.properties);
 		let content = await this.getTemplateContent();
 
-		// 替换模板变量
-		content = content.replace('{{frontmatter}}', frontmatter);
-		content = content.replace('{{title}}', page.title);
-		content = content.replace('{{content}}', ''); // 内容占位符，用户可手动添加
+		// 构建 Notion 属性数据
+		const notionPropertyMap = await this.buildNotionPropertyMap(page.properties);
 
-		// 替换自定义属性变量
-		this.settings.propertyMappings
-			.filter(m => m.isTemplateVariable && m.enabled)
-			.forEach(mapping => {
-				const prop = page.properties[mapping.notionProperty];
-				const value = prop ? this.extractPropertyValue(prop) : '';
-				const placeholder = new RegExp(`{{${mapping.obsidianProperty}}}`, 'g');
-				content = content.replace(placeholder, String(value));
-			});
+		// 检查模板是否包含 frontmatter 块
+		const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+
+		if (frontmatterMatch) {
+			// 模板有 frontmatter 块：解析并用 Notion 数据覆盖属性值
+			const templateFrontmatter = frontmatterMatch[1];
+
+			if (templateFrontmatter.includes('{{frontmatter}}')) {
+				// 模板使用 {{frontmatter}} 占位符 → 直接替换
+				const generatedFrontmatter = await this.generateFrontmatter(page.properties);
+				content = content.replace('{{frontmatter}}', generatedFrontmatter);
+			} else {
+				// 模板直接写了属性名 → 解析并逐个覆盖
+				const parsedLines = this.parseFrontmatterLines(templateFrontmatter);
+				const newFrontmatterLines: string[] = [];
+				const processedKeys = new Set<string>();
+
+				for (const { key, originalLine } of parsedLines) {
+					processedKeys.add(key);
+
+					if (notionPropertyMap.has(key)) {
+						const notionValue = notionPropertyMap.get(key) ?? '';
+
+						// 对于列表类型属性（如 tags），合并模板默认值和 Notion 数据
+						if (notionValue.startsWith('\n') && /^\s+-\s/.test(originalLine.split('\n').slice(1).join('\n'))) {
+							const templateItems = originalLine.split('\n')
+								.filter(line => /^\s+-\s/.test(line))
+								.map(line => line.replace(/^\s+-\s+/, '').trim());
+							const notionItems = notionValue.split('\n')
+								.filter(line => /^\s+-\s/.test(line))
+								.map(line => line.replace(/^\s+-\s+/, '').trim());
+							const mergedItems = [...new Set([...templateItems, ...notionItems])];
+							const mergedValue = '\n' + mergedItems.map(item => `  - ${item}`).join('\n');
+							newFrontmatterLines.push(`${key}: ${mergedValue}`);
+						} else {
+							newFrontmatterLines.push(`${key}: ${notionValue}`);
+						}
+					} else {
+						newFrontmatterLines.push(originalLine);
+					}
+				}
+
+				// 添加 Notion 中有但模板中没有的属性
+				for (const [key, value] of notionPropertyMap) {
+					if (!processedKeys.has(key)) {
+						newFrontmatterLines.push(`${key}: ${value}`);
+					}
+				}
+
+				// 添加元信息
+				if (!processedKeys.has('notion_id')) {
+					newFrontmatterLines.push(`notion_id: ${page.id}`);
+				}
+				if (!processedKeys.has('notion_last_edited')) {
+					newFrontmatterLines.push(`notion_last_edited: ${page.lastEditedTime}`);
+				}
+
+				const newFrontmatter = newFrontmatterLines.join('\n');
+				content = content.replace(frontmatterMatch[0], `---\n${newFrontmatter}\n---`);
+			}
+		} else {
+			// 模板没有 frontmatter 块 → 生成并添加到开头
+			const generatedFrontmatter = await this.generateFrontmatter(page.properties);
+			content = `---\n${generatedFrontmatter}\n---\n\n${content}`;
+		}
+
+		// 替换正文中的模板变量
+		content = content.replace(/{{title}}/g, page.title);
+		content = content.replace(/{{content}}/g, '');
+
+		// 替换自定义属性变量（用于正文部分）
+		for (const [key, value] of notionPropertyMap) {
+			const placeholder = new RegExp(`{{${key}}}`, 'g');
+			content = content.replace(placeholder, value.startsWith('\n') ? value.trim() : value);
+		}
 
 		return content;
 	}
 
-	// 同步数据库
+	// 同步数据库（入口：打开同步中心）
 	async syncDatabase(): Promise<void> {
 		if (!this.notionClient) {
 			new Notice('请先配置 Notion Token');
@@ -382,32 +590,22 @@ export default class NotionSyncPlugin extends Plugin {
 			return;
 		}
 
-		new Notice('开始同步 Notion 数据库...');
+		new Notice('正在从 Notion 获取数据...');
 
 		try {
-			// 获取所有页面
 			const pages = await this.fetchAllPages();
-			console.log(`Fetched ${pages.length} pages from Notion`);
+			console.log(`[Notion Sync] Fetched ${pages.length} pages from Notion`);
 
-			// 确保同步文件夹存在
 			const folderPath = normalizePath(this.settings.syncFolder);
 			await this.ensureFolderExists(folderPath);
 
-			// 执行同步
-			const result = await this.performSync(pages, folderPath);
+			new Notice('正在分析同步状态...');
+			const previewItems = await this.prepareSyncPreview(pages, folderPath);
 
-			// 显示结果
-			new Notice(
-				`同步完成！新增: ${result.created.length}, 更新: ${result.updated.length}, ` +
-				`未变更: ${result.unchanged}, 跳过: ${result.skipped}`
-			);
-
-			// 显示详细结果
-			new SyncResultModal(this.app, result).open();
-
+			new SyncCenterModal(this.app, this, previewItems, folderPath).open();
 		} catch (error) {
 			console.error('Sync error:', error);
-			new Notice(`同步失败: ${error.message}`);
+			new Notice(`获取数据失败: ${error.message}`);
 		}
 	}
 
@@ -419,8 +617,73 @@ export default class NotionSyncPlugin extends Plugin {
 		}
 	}
 
-	// 执行同步
-	async performSync(pages: PageInfo[], folderPath: string): Promise<SyncResult> {
+	// 预分析同步状态（不实际写入文件）
+	async prepareSyncPreview(pages: PageInfo[], folderPath: string): Promise<SyncPreviewItem[]> {
+		const previewItems: SyncPreviewItem[] = [];
+		const filenameCount = new Map<string, number>();
+		const processedIds = new Set<string>();
+
+		for (const page of pages) {
+			try {
+				if (!this.checkSyncRules(page.properties)) {
+					continue;
+				}
+
+				if (processedIds.has(page.id)) {
+					continue;
+				}
+				processedIds.add(page.id);
+
+				const filename = this.generateFilename(page);
+
+				let uniqueFilename = filename;
+				const count = filenameCount.get(filename) || 0;
+				if (count > 0) {
+					uniqueFilename = `${filename}_${count}`;
+				}
+				filenameCount.set(filename, count + 1);
+
+				const filePath = normalizePath(`${folderPath}/${uniqueFilename}.md`);
+				const newContent = await this.generateFileContent(page);
+				const existingFile = this.app.vault.getAbstractFileByPath(filePath);
+
+				let status: SyncPreviewStatus;
+				let oldContent = '';
+
+				if (existingFile instanceof TFile) {
+					oldContent = await this.app.vault.read(existingFile);
+					const lastSyncMatch = oldContent.match(/notion_last_edited:\s*(.+)/);
+					const lastSyncTime = lastSyncMatch ? new Date(lastSyncMatch[1]).getTime() : 0;
+					const notionEditTime = new Date(page.lastEditedTime).getTime();
+
+					if (notionEditTime > lastSyncTime || oldContent !== newContent) {
+						status = 'updated';
+					} else {
+						status = 'unchanged';
+					}
+				} else {
+					status = 'new';
+				}
+
+				previewItems.push({
+					page,
+					filename: uniqueFilename,
+					filePath,
+					status,
+					newContent,
+					oldContent,
+					selected: status === 'new' || status === 'updated',
+				});
+			} catch (error) {
+				console.error(`[Notion Sync] 预分析页面 ${page.id} 失败:`, error);
+			}
+		}
+
+		return previewItems;
+	}
+
+	// 执行选中项的同步
+	async performSelectedSync(items: SyncPreviewItem[], folderPath: string): Promise<SyncResult> {
 		const result: SyncResult = {
 			created: [],
 			updated: [],
@@ -428,46 +691,303 @@ export default class NotionSyncPlugin extends Plugin {
 			skipped: 0,
 		};
 
-		for (const page of pages) {
-			// 检查同步规则
-			if (!this.checkSyncRules(page.properties)) {
-				result.skipped++;
+		await this.ensureFolderExists(folderPath);
+
+		for (const item of items) {
+			if (!item.selected) {
+				if (item.status === 'unchanged') {
+					result.unchanged++;
+				} else {
+					result.skipped++;
+				}
 				continue;
 			}
 
-			const filename = this.generateFilename(page);
-			const filePath = normalizePath(`${folderPath}/${filename}.md`);
+			try {
+				const existingFile = this.app.vault.getAbstractFileByPath(item.filePath);
 
-			const existingFile = this.app.vault.getAbstractFileByPath(filePath);
-			const content = await this.generateFileContent(page);
-
-			if (existingFile instanceof TFile) {
-				// 文件已存在，检查是否需要更新
-				const existingContent = await this.app.vault.read(existingFile);
-				const lastSyncMatch = existingContent.match(/notion_last_edited:\s*(.+)/);
-				const lastSyncTime = lastSyncMatch ? new Date(lastSyncMatch[1]).getTime() : 0;
-				const notionEditTime = new Date(page.lastEditedTime).getTime();
-
-				if (notionEditTime > lastSyncTime || existingContent !== content) {
-					// 需要更新，保存旧内容用于对比
-					const oldContent = existingContent;
-					await this.app.vault.modify(existingFile, content);
-					result.updated.push({
-						filename,
-						oldContent,
-						newContent: content,
-					});
+				if (item.status === 'new') {
+					await this.app.vault.create(item.filePath, item.newContent);
+					result.created.push(item.filename);
+				} else if (item.status === 'updated') {
+					if (existingFile instanceof TFile) {
+						await this.app.vault.modify(existingFile, item.newContent);
+						result.updated.push({
+							filename: item.filename,
+							oldContent: item.oldContent,
+							newContent: item.newContent,
+						});
+					}
 				} else {
 					result.unchanged++;
 				}
-			} else {
-				// 创建新文件
-				await this.app.vault.create(filePath, content);
-				result.created.push(filename);
+			} catch (error) {
+				console.error(`[Notion Sync] 同步文件 ${item.filename} 失败:`, error);
 			}
 		}
 
 		return result;
+	}
+}
+
+// ==================== 同步中心弹窗 ====================
+
+class SyncCenterModal extends Modal {
+	plugin: NotionSyncPlugin;
+	previewItems: SyncPreviewItem[];
+	folderPath: string;
+	listContainer: HTMLElement;
+
+	constructor(app: App, plugin: NotionSyncPlugin, previewItems: SyncPreviewItem[], folderPath: string) {
+		super(app);
+		this.plugin = plugin;
+		this.previewItems = previewItems;
+		this.folderPath = folderPath;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.addClass('sync-center-modal');
+
+		contentEl.createEl('h2', { text: '📋 同步中心' });
+
+		const newItems = this.previewItems.filter(item => item.status === 'new');
+		const updatedItems = this.previewItems.filter(item => item.status === 'updated');
+		const unchangedItems = this.previewItems.filter(item => item.status === 'unchanged');
+
+		// 统计信息
+		const statsDiv = contentEl.createDiv('sync-center-stats');
+		statsDiv.style.display = 'flex';
+		statsDiv.style.gap = '16px';
+		statsDiv.style.marginBottom = '16px';
+		statsDiv.style.padding = '12px';
+		statsDiv.style.borderRadius = '8px';
+		statsDiv.style.backgroundColor = 'var(--background-secondary)';
+
+		this.createStatBadge(statsDiv, '🆕 新增', newItems.length, '#2ea043');
+		this.createStatBadge(statsDiv, '📝 更新', updatedItems.length, '#d29922');
+		this.createStatBadge(statsDiv, '✅ 未变更', unchangedItems.length, 'var(--text-muted)');
+
+		// 操作栏
+		const actionBar = contentEl.createDiv('sync-center-action-bar');
+		actionBar.style.display = 'flex';
+		actionBar.style.justifyContent = 'space-between';
+		actionBar.style.alignItems = 'center';
+		actionBar.style.marginBottom = '12px';
+
+		const selectActions = actionBar.createDiv();
+		selectActions.style.display = 'flex';
+		selectActions.style.gap = '8px';
+
+		const selectAllBtn = selectActions.createEl('button', { text: '全选' });
+		selectAllBtn.style.fontSize = '12px';
+		selectAllBtn.addEventListener('click', () => {
+			this.previewItems.forEach(item => {
+				if (item.status !== 'unchanged') item.selected = true;
+			});
+			this.renderList();
+		});
+
+		const deselectAllBtn = selectActions.createEl('button', { text: '取消全选' });
+		deselectAllBtn.style.fontSize = '12px';
+		deselectAllBtn.addEventListener('click', () => {
+			this.previewItems.forEach(item => item.selected = false);
+			this.renderList();
+		});
+
+		const selectNewBtn = selectActions.createEl('button', { text: '仅选新增' });
+		selectNewBtn.style.fontSize = '12px';
+		selectNewBtn.addEventListener('click', () => {
+			this.previewItems.forEach(item => {
+				item.selected = item.status === 'new';
+			});
+			this.renderList();
+		});
+
+		const selectUpdatedBtn = selectActions.createEl('button', { text: '仅选更新' });
+		selectUpdatedBtn.style.fontSize = '12px';
+		selectUpdatedBtn.addEventListener('click', () => {
+			this.previewItems.forEach(item => {
+				item.selected = item.status === 'updated';
+			});
+			this.renderList();
+		});
+
+		// 文件列表容器
+		this.listContainer = contentEl.createDiv('sync-center-list');
+		this.listContainer.style.maxHeight = '400px';
+		this.listContainer.style.overflow = 'auto';
+		this.listContainer.style.border = '1px solid var(--background-modifier-border)';
+		this.listContainer.style.borderRadius = '8px';
+		this.renderList();
+
+		// 底部按钮
+		const footerDiv = contentEl.createDiv('sync-center-footer');
+		footerDiv.style.display = 'flex';
+		footerDiv.style.justifyContent = 'flex-end';
+		footerDiv.style.gap = '10px';
+		footerDiv.style.marginTop = '16px';
+
+		const cancelBtn = footerDiv.createEl('button', { text: '取消' });
+		cancelBtn.addEventListener('click', () => this.close());
+
+		const syncBtn = footerDiv.createEl('button', { text: '🔄 开始同步', cls: 'mod-cta' });
+		syncBtn.addEventListener('click', async () => {
+			const selectedCount = this.previewItems.filter(item => item.selected).length;
+			if (selectedCount === 0) {
+				new Notice('请至少选择一个文件进行同步');
+				return;
+			}
+
+			syncBtn.disabled = true;
+			syncBtn.textContent = '同步中...';
+
+			try {
+				const result = await this.plugin.performSelectedSync(this.previewItems, this.folderPath);
+				this.close();
+
+				new Notice(
+					`同步完成！新增: ${result.created.length}, 更新: ${result.updated.length}, ` +
+					`未变更: ${result.unchanged}, 跳过: ${result.skipped}`
+				);
+
+				new SyncResultModal(this.app, result).open();
+			} catch (error) {
+				console.error('Sync error:', error);
+				new Notice(`同步失败: ${error.message}`);
+				syncBtn.disabled = false;
+				syncBtn.textContent = '🔄 开始同步';
+			}
+		});
+	}
+
+	createStatBadge(container: HTMLElement, label: string, count: number, color: string) {
+		const badge = container.createDiv();
+		badge.style.display = 'flex';
+		badge.style.alignItems = 'center';
+		badge.style.gap = '6px';
+
+		const countSpan = badge.createSpan({ text: String(count) });
+		countSpan.style.fontSize = '20px';
+		countSpan.style.fontWeight = 'bold';
+		countSpan.style.color = color;
+
+		badge.createSpan({ text: label });
+	}
+
+	renderList() {
+		this.listContainer.empty();
+
+		const newItems = this.previewItems.filter(item => item.status === 'new');
+		const updatedItems = this.previewItems.filter(item => item.status === 'updated');
+		const unchangedItems = this.previewItems.filter(item => item.status === 'unchanged');
+
+		if (newItems.length > 0) {
+			this.renderSection('🆕 新增文件', newItems);
+		}
+		if (updatedItems.length > 0) {
+			this.renderSection('📝 需要更新', updatedItems);
+		}
+		if (unchangedItems.length > 0) {
+			this.renderSection('✅ 未变更', unchangedItems);
+		}
+
+		if (this.previewItems.length === 0) {
+			const emptyDiv = this.listContainer.createDiv();
+			emptyDiv.style.padding = '40px';
+			emptyDiv.style.textAlign = 'center';
+			emptyDiv.style.color = 'var(--text-muted)';
+			emptyDiv.textContent = '没有满足同步规则的记录';
+		}
+	}
+
+	renderSection(title: string, items: SyncPreviewItem[]) {
+		const sectionHeader = this.listContainer.createDiv('sync-section-header');
+		sectionHeader.style.padding = '8px 12px';
+		sectionHeader.style.fontWeight = 'bold';
+		sectionHeader.style.fontSize = '13px';
+		sectionHeader.style.backgroundColor = 'var(--background-secondary)';
+		sectionHeader.style.borderBottom = '1px solid var(--background-modifier-border)';
+		sectionHeader.style.position = 'sticky';
+		sectionHeader.style.top = '0';
+		sectionHeader.style.zIndex = '1';
+		sectionHeader.textContent = `${title} (${items.length})`;
+
+		items.forEach(item => {
+			const row = this.listContainer.createDiv('sync-item-row');
+			row.style.display = 'flex';
+			row.style.alignItems = 'center';
+			row.style.gap = '10px';
+			row.style.padding = '8px 12px';
+			row.style.borderBottom = '1px solid var(--background-modifier-border)';
+
+			// 勾选框
+			const checkbox = row.createEl('input', { type: 'checkbox' });
+			checkbox.checked = item.selected;
+			checkbox.style.cursor = 'pointer';
+			if (item.status === 'unchanged') {
+				checkbox.disabled = true;
+				checkbox.style.opacity = '0.5';
+			}
+			checkbox.addEventListener('change', () => {
+				item.selected = checkbox.checked;
+			});
+
+			// 状态标签
+			const statusBadge = row.createSpan();
+			statusBadge.style.fontSize = '11px';
+			statusBadge.style.padding = '2px 6px';
+			statusBadge.style.borderRadius = '4px';
+			statusBadge.style.fontWeight = '500';
+			statusBadge.style.flexShrink = '0';
+
+			if (item.status === 'new') {
+				statusBadge.textContent = '新增';
+				statusBadge.style.backgroundColor = 'rgba(46, 160, 67, 0.15)';
+				statusBadge.style.color = '#2ea043';
+			} else if (item.status === 'updated') {
+				statusBadge.textContent = '更新';
+				statusBadge.style.backgroundColor = 'rgba(210, 153, 34, 0.15)';
+				statusBadge.style.color = '#d29922';
+			} else {
+				statusBadge.textContent = '未变更';
+				statusBadge.style.backgroundColor = 'var(--background-secondary)';
+				statusBadge.style.color = 'var(--text-muted)';
+			}
+
+			// 文件名
+			const filenameSpan = row.createSpan({ text: item.filename });
+			filenameSpan.style.flex = '1';
+			filenameSpan.style.overflow = 'hidden';
+			filenameSpan.style.textOverflow = 'ellipsis';
+			filenameSpan.style.whiteSpace = 'nowrap';
+
+			// 操作按钮
+			if (item.status === 'updated') {
+				const diffBtn = row.createEl('button', { text: '对比' });
+				diffBtn.style.fontSize = '11px';
+				diffBtn.style.padding = '2px 8px';
+				diffBtn.style.flexShrink = '0';
+				diffBtn.addEventListener('click', () => {
+					new DiffModal(this.app, item.filename, item.oldContent, item.newContent).open();
+				});
+			}
+
+			if (item.status === 'new') {
+				const previewBtn = row.createEl('button', { text: '预览' });
+				previewBtn.style.fontSize = '11px';
+				previewBtn.style.padding = '2px 8px';
+				previewBtn.style.flexShrink = '0';
+				previewBtn.addEventListener('click', () => {
+					new DiffModal(this.app, item.filename, '', item.newContent).open();
+				});
+			}
+		});
+	}
+
+	onClose() {
+		this.contentEl.empty();
 	}
 }
 
