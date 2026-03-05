@@ -2,6 +2,10 @@
 
 将 Notion 数据库记录同步到 Obsidian 笔记的插件。支持属性映射、同步规则过滤、模板文件、同步中心预览等功能，让你的 Notion 数据库与 Obsidian 笔记无缝衔接。
 
+👇 演示视频
+
+
+
 ## 功能特性
 
 ### 📋 同步中心
@@ -17,6 +21,9 @@
 
 > 📸 *同步中心弹窗界面*
 
+<img width="848" height="476" alt="image" src="https://github.com/user-attachments/assets/73982339-0719-42ab-a662-cfcf17455f13" />
+
+
 ### 🔗 基础配置
 
 - 配置 Notion Integration Token 和 Database ID
@@ -24,6 +31,9 @@
 - 自定义同步文件保存的文件夹路径
 
 > 📸 *设置页面的基础配置区域*
+
+<img width="792" height="400" alt="image" src="https://github.com/user-attachments/assets/a6ea3d8d-76b5-40bb-abc1-16dd0c9b8c39" />
+
 
 ### 🗂️ 属性映射
 
@@ -35,6 +45,9 @@
 
 > 📸 *属性映射配置表格*
 
+<img width="796" height="580" alt="image" src="https://github.com/user-attachments/assets/a21321f3-9266-4f17-b394-2bde48f568ab" />
+
+
 ### 📏 同步规则
 
 - 支持添加多条同步判定规则
@@ -43,6 +56,9 @@
 - 例如：只同步 `year` 等于 `2026` 且 `start-date` 不为空的记录
 
 > 📸 *同步规则配置区域*
+
+<img width="796" height="289" alt="image" src="https://github.com/user-attachments/assets/ee712b2f-4036-4930-b8a5-43e47ef2bc93" />
+
 
 ### 📄 文件模板
 
@@ -87,6 +103,9 @@ created: 2026-01-11 23:59
 
 > 📸 *模板文件配置区域*
 
+<img width="807" height="305" alt="image" src="https://github.com/user-attachments/assets/35fc5001-5020-4dfa-a2df-a1ee9f799481" />
+
+
 ### 📊 同步结果
 
 同步完成后展示详细结果：
@@ -97,6 +116,9 @@ created: 2026-01-11 23:59
 - 差异对比：行级对比，绿色为新增内容，红色为删除内容
 
 > 📸 *同步结果弹窗*
+
+<img width="556" height="551" alt="image" src="https://github.com/user-attachments/assets/0c6ba02f-3dab-4cc7-bb56-24b0a3381682" />
+
 
 ### 🧩 Frontmatter 格式
 
