@@ -4,6 +4,7 @@
 # Intellij
 *.iml
 .idea
+.qoder
 
 # npm
 node_modules

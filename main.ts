@@ -328,9 +328,9 @@ export default class NotionSyncPlugin extends Plugin {
 				if (!prop.relation || prop.relation.length === 0) return '';
 				return prop.relation.map((r: any) => r.id || '').join(', ');
 			case 'created_time':
-				return prop.created_time;
+				return this.formatDateTimeForObsidian(prop.created_time || '');
 			case 'last_edited_time':
-				return prop.last_edited_time;
+				return this.formatDateTimeForObsidian(prop.last_edited_time || '');
 			case 'created_by':
 				return prop.created_by?.name || '';
 			case 'last_edited_by':
@@ -390,6 +390,18 @@ export default class NotionSyncPlugin extends Plugin {
 		return this.extractPropertyValue(prop);
 	}
 
+	// 格式化 ISO 时间为 Obsidian 友好格式（YYYY-MM-DD HH:mm）
+	formatDateTimeForObsidian(dateString: string): string {
+		if (!dateString) return '';
+		// 匹配 ISO 8601 格式（如 2026-02-10T07:40:00.000Z）
+		const isoMatch = dateString.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+		if (isoMatch) {
+			return `${isoMatch[1]} ${isoMatch[2]}`;
+		}
+		// 已经是简单日期格式则直接返回
+		return dateString;
+	}
+
 	// 将属性值格式化为 YAML frontmatter 格式的字符串
 	formatValueForYaml(value: any): string {
 		if (value === null || value === undefined || value === '') {
@@ -398,7 +410,6 @@ export default class NotionSyncPlugin extends Plugin {
 
 		if (Array.isArray(value)) {
 			if (value.length === 0) return '';
-			// 多值使用 YAML 列表格式
 			return '\n' + value.map(v => `  - ${v}`).join('\n');
 		}
 
@@ -406,14 +417,60 @@ export default class NotionSyncPlugin extends Plugin {
 			return String(value);
 		}
 
+		if (typeof value === 'number') {
+			return String(value);
+		}
+
 		const stringValue = String(value);
 
-		// 包含特殊 YAML 字符时用引号包裹
-		if (/[:#[\]{}|>&*!,]/g.test(stringValue) || stringValue.includes('\n')) {
-			return `"${stringValue.replace(/"/g, '\\"')}"`;
+		// 日期时间格式化：将 ISO 格式转为 Obsidian 友好格式
+		if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(stringValue)) {
+			return this.formatDateTimeForObsidian(stringValue);
+		}
+
+		// 纯日期格式（YYYY-MM-DD）直接返回
+		if (/^\d{4}-\d{2}-\d{2}$/.test(stringValue)) {
+			return stringValue;
+		}
+
+		// 多行文本使用 YAML 块标量语法
+		if (stringValue.includes('\n')) {
+			const indentedLines = stringValue.split('\n').map(line => `  ${line}`).join('\n');
+			return `|\n${indentedLines}`;
+		}
+
+		// 包含需要引号的 YAML 特殊字符
+		// 注意：冒号后跟空格、# 前有空格、[] {} 等需要引号
+		// 但 URL（http:// https://）、斜杠路径、emoji 等不需要引号
+		if (this.needsYamlQuoting(stringValue)) {
+			return `"${stringValue.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 		}
 
 		return stringValue;
+	}
+
+	// 判断字符串是否需要 YAML 引号包裹
+	needsYamlQuoting(value: string): boolean {
+		// 空字符串不需要
+		if (!value) return false;
+
+		// 以特殊字符开头需要引号
+		if (/^[&*!|>%@`]/.test(value)) return true;
+
+		// 包含 `: `（冒号+空格）需要引号，但纯 URL 不需要
+		if (value.includes(': ') && !value.match(/^https?:\/\//)) return true;
+
+		// 包含 ` #`（空格+井号，YAML 注释）需要引号
+		if (value.includes(' #')) return true;
+
+		// 以 `{` 或 `[` 开头（YAML flow 语法）需要引号
+		if (/^[{[]/.test(value)) return true;
+
+		// YAML 保留值需要引号
+		const reserved = ['true', 'false', 'yes', 'no', 'null', 'on', 'off'];
+		if (reserved.includes(value.toLowerCase())) return true;
+
+		return false;
 	}
 
 	// 构建 Notion 属性数据的 Map（obsidianProperty -> 格式化后的值）
@@ -448,7 +505,8 @@ export default class NotionSyncPlugin extends Plugin {
 
 		// 添加元信息
 		lines.push(`notion_id: ${properties.id || ''}`);
-		lines.push(`notion_last_edited: ${properties.last_edited_time || ''}`);
+		const lastEdited = this.formatDateTimeForObsidian(properties.last_edited_time || '');
+		lines.push(`notion_last_edited: ${lastEdited}`);
 
 		return lines.join('\n');
 	}
@@ -553,7 +611,7 @@ export default class NotionSyncPlugin extends Plugin {
 					newFrontmatterLines.push(`notion_id: ${page.id}`);
 				}
 				if (!processedKeys.has('notion_last_edited')) {
-					newFrontmatterLines.push(`notion_last_edited: ${page.lastEditedTime}`);
+					newFrontmatterLines.push(`notion_last_edited: ${this.formatDateTimeForObsidian(page.lastEditedTime)}`);
 				}
 
 				const newFrontmatter = newFrontmatterLines.join('\n');
