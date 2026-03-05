@@ -1,4 +1,4 @@
-# Notion Database Sync
+# Sync Notion Database
 
 将 Notion 数据库记录同步到 Obsidian 笔记的插件。支持属性映射、同步规则过滤、模板文件、同步中心预览等功能，让你的 Notion 数据库与 Obsidian 笔记无缝衔接。
 
@@ -174,7 +174,7 @@ created: 2026-01-11 23:59
    ├── manifest.json
    └── styles.css
    ```
-4. 重启 Obsidian，进入 **设置 → 第三方插件**，启用 **Notion Database Sync**
+4. 重启 Obsidian，进入 **设置 → 第三方插件**，启用 **Sync Notion Database**
 
 > ⚠️ 如果看不到插件，请确认已在设置中关闭「安全模式」（设置 → 第三方插件 → 关闭安全模式）
 
@@ -220,7 +220,7 @@ https://www.notion.so/your-workspace/DATABASE_ID?v=xxx
 
 ### 第三步：配置插件
 
-1. 打开 Obsidian 设置 → Notion Database Sync
+1. 打开 Obsidian 设置 → Sync Notion Database
 2. 填写 Notion Token 和 Database ID
 3. 点击「测试连接」验证配置
 4. 设置同步文件夹路径（如 `2-areas/book/2026`）
