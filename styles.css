@@ -1,8 +1,64 @@
-/*
+/* Sync Center Modal */
+.sync-center-modal {
+	min-width: 500px;
+}
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+.sync-center-modal .modal-content {
+	padding: 16px;
+}
 
-If your plugin does not need CSS, delete this file.
+.sync-center-stats {
+	display: flex;
+	gap: 16px;
+	margin-bottom: 16px;
+	padding: 12px;
+	border-radius: 8px;
+	background-color: var(--background-secondary);
+}
 
-*/
+.sync-center-action-bar button {
+	cursor: pointer;
+	border-radius: 4px;
+}
+
+.sync-center-list {
+	max-height: 400px;
+	overflow: auto;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+}
+
+.sync-section-header {
+	padding: 8px 12px;
+	font-weight: bold;
+	font-size: 13px;
+	background-color: var(--background-secondary);
+	border-bottom: 1px solid var(--background-modifier-border);
+	position: sticky;
+	top: 0;
+	z-index: 1;
+}
+
+.sync-item-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--background-modifier-border);
+	transition: background-color 0.15s ease;
+}
+
+.sync-item-row:hover {
+	background-color: var(--background-modifier-hover);
+}
+
+.sync-item-row:last-child {
+	border-bottom: none;
+}
+
+.sync-center-footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 10px;
+	margin-top: 16px;
+}
