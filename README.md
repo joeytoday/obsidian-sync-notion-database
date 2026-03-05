@@ -163,28 +163,41 @@ created: 2026-01-11 23:59
 
 ## 安装方法
 
-### 手动安装
+### 方式一：下载压缩包安装（推荐）
+
+1. 前往 [Releases](https://github.com/joeytoday/obsidian-sync-notion-database/releases) 页面，下载最新版本的 `sync-notion-database.zip`
+2. 解压到你的 Obsidian 仓库的 `.obsidian/plugins/` 目录下
+3. 确保解压后的目录结构为：
+   ```
+   .obsidian/plugins/sync-notion-database/
+   ├── main.js
+   ├── manifest.json
+   └── styles.css
+   ```
+4. 重启 Obsidian，进入 **设置 → 第三方插件**，启用 **Notion Database Sync**
+
+> ⚠️ 如果看不到插件，请确认已在设置中关闭「安全模式」（设置 → 第三方插件 → 关闭安全模式）
+
+### 方式二：BRAT 插件安装
+
+如果你已安装 [BRAT](https://github.com/TfTHacker/obsidian42-brat) 插件，可以直接通过 BRAT 安装未上架的社区插件：
+
+1. 打开 Obsidian 设置 → BRAT → **Add Beta plugin**
+2. 输入仓库地址：`joeytoday/obsidian-sync-notion-database`
+3. 点击 **Add Plugin**，BRAT 会自动下载并安装
+
+### 方式三：从源码构建
 
 1. 确保已安装 Node.js (v16+)
-2. 克隆或下载本仓库
-3. 在项目目录运行：
+2. 克隆仓库并构建：
    ```bash
+   git clone https://github.com/joeytoday/obsidian-sync-notion-database.git
+   cd obsidian-sync-notion-database
    npm install
    npm run build
    ```
-4. 将以下文件复制到 Obsidian 插件目录 `.obsidian/plugins/notion-database-sync/`：
-   - `main.js`
-   - `manifest.json`
-   - `styles.css`
-5. 重启 Obsidian，在设置 → 第三方插件中启用 **Notion Database Sync**
-
-### 插件目录位置
-
-| 系统 | 路径 |
-|------|------|
-| macOS | `~/Documents/Obsidian Vault/.obsidian/plugins/notion-database-sync/` |
-| Windows | `%USERPROFILE%\Documents\Obsidian Vault\.obsidian\plugins\notion-database-sync\` |
-| Linux | `~/Documents/Obsidian Vault/.obsidian/plugins/notion-database-sync/` |
+3. 将 `main.js`、`manifest.json`、`styles.css` 复制到 `.obsidian/plugins/sync-notion-database/` 目录
+4. 重启 Obsidian 并启用插件
 
 ## 使用指南
 
@@ -234,19 +247,6 @@ https://www.notion.so/your-workspace/DATABASE_ID?v=xxx
 4. 点击「开始同步」
 
 > 📸 *命令面板中调用同步命令*
-
-## 开发
-
-```bash
-# 安装依赖
-npm install
-
-# 开发模式（自动编译，文件变更时自动重新构建）
-npm run dev
-
-# 生产构建
-npm run build
-```
 
 ## 许可证
 
