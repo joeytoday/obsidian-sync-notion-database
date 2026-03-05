@@ -1433,6 +1433,37 @@ class NotionSyncSettingTab extends PluginSettingTab {
 					})
 			);
 
+		// 测试连接（放在基础配置区域内）
+		const testConnectionSetting = new Setting(containerEl)
+			.setName('测试连接')
+			.setDesc('验证 Notion Token 和 Database ID 是否配置正确');
+
+		const testStatusEl = testConnectionSetting.descEl.createSpan();
+		testStatusEl.style.marginLeft = '8px';
+
+		testConnectionSetting.addButton((button) =>
+			button
+				.setButtonText('测试连接')
+				.onClick(async () => {
+					button.setButtonText('连接中...');
+					button.setDisabled(true);
+					testStatusEl.textContent = '';
+
+					const result = await this.testConnection();
+
+					if (result.success) {
+						testStatusEl.textContent = ` ✅ ${result.message}`;
+						testStatusEl.style.color = '#2ea043';
+					} else {
+						testStatusEl.textContent = ` ❌ ${result.message}`;
+						testStatusEl.style.color = '#f85149';
+					}
+
+					button.setButtonText('测试连接');
+					button.setDisabled(false);
+				})
+		);
+
 		// 文件名配置
 		containerEl.createEl('h3', { text: '文件名配置' });
 
@@ -1550,18 +1581,6 @@ class NotionSyncSettingTab extends PluginSettingTab {
 				text.inputEl.style.width = '100%';
 			});
 
-		// 测试连接
-		containerEl.createEl('h3', { text: '测试' });
-		new Setting(containerEl)
-			.setName('测试连接')
-			.setDesc('测试与 Notion API 的连接')
-			.addButton((button) =>
-				button
-					.setButtonText('测试连接')
-					.onClick(async () => {
-						await this.testConnection();
-					})
-			);
 	}
 
 	async refreshProperties(): Promise<void> {
@@ -1758,24 +1777,30 @@ class NotionSyncSettingTab extends PluginSettingTab {
 		desc.style.fontSize = '12px';
 	}
 
-	async testConnection(): Promise<void> {
+	async testConnection(): Promise<{ success: boolean; message: string }> {
 		if (!this.plugin.notionClient) {
-			new Notice('请先配置 Notion Token');
-			return;
+			const message = '请先配置 Notion Token';
+			new Notice(message);
+			return { success: false, message };
 		}
 
 		if (!this.plugin.settings.databaseId) {
-			new Notice('请先配置 Database ID');
-			return;
+			const message = '请先配置 Database ID';
+			new Notice(message);
+			return { success: false, message };
 		}
 
 		try {
 			const response = await this.plugin.notionClient.databases.retrieve(this.plugin.settings.databaseId);
 			const dbTitle = response.title?.[0]?.plain_text ?? '未命名';
-			new Notice(`连接成功！数据库标题: ${dbTitle}`);
+			const message = `连接成功！数据库: ${dbTitle}`;
+			new Notice(message);
+			return { success: true, message };
 		} catch (error) {
 			console.error('Connection test error:', error);
-			new Notice(`连接失败: ${error.message}`);
+			const message = `连接失败: ${error.message}`;
+			new Notice(message);
+			return { success: false, message };
 		}
 	}
 }
