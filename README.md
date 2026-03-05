@@ -248,6 +248,10 @@ https://www.notion.so/your-workspace/DATABASE_ID?v=xxx
 
 > 📸 *命令面板中调用同步命令*
 
+## 更新日志
+
+查看 [CHANGELOG.md](./CHANGELOG.md) 了解所有版本的详细变更记录。
+
 ## 许可证
 
 MIT License
